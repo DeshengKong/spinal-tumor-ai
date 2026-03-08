@@ -1,0 +1,1502 @@
+# ============================================================================
+# SPINAL TUMOR AI SURGICAL DECISION SYSTEM
+# Version 4.0
+# Domain: Neurosurgery — Intraspinal Tumor Surgery
+# Author: Desheng
+# Last updated: 2026-03-07
+# ============================================================================
+#
+# CHANGELOG v3 → v4:
+#   - Added rare_intramedullary_pathology skill (lipoma, teratoma, dermoid, cavernoma)
+#   - Added conus_filum_tumor skill (myxopapillary ependymoma, filum tumors)
+#   - Added recurrent_tumor_reoperation skill
+#   - Added spinal_stability_assessment as a shared module
+#   - Refined astrocytoma subtyping (pilocytic vs diffuse vs high-grade)
+#   - Made VHL screening mandatory in hemangioblastoma workflow
+#   - Added uncertainty_triage skill for ambiguous/incomplete cases
+#   - Added graceful_degradation logic to DTI and IONM skills
+#   - Expanded working_examples across skills
+#   - Standardized never_do_rules and stop_conditions formatting
+# ============================================================================
+
+skill_system:
+  name: spinal_tumor_ai_surgical_system
+  version: "4.0"
+  domain: neurosurgery
+  scope:
+    - intramedullary spinal cord tumors
+    - intradural extramedullary spinal tumors
+    - conus medullaris and filum terminale tumors
+    - rare intramedullary pathologies (lipoma, teratoma, dermoid, cavernoma)
+    - metastatic spinal cord compression
+    - vascular spinal tumors (hemangioblastoma)
+    - recurrent spinal tumors and reoperation
+    - surgical planning adjuncts (DTI, IONM)
+    - intraoperative safety and stop-continue logic
+    - spinal stability preservation
+
+# ============================================================================
+# GLOBAL ROUTER
+# ============================================================================
+
+global_router:
+  entry_logic:
+    - step: classify_by_compartment
+      routes:
+        intramedullary: route_intramedullary
+        intradural_extramedullary: IDEM_management
+        conus_or_filum: conus_filum_tumor
+        epidural_or_known_cancer: metastatic_spinal_cord_compression
+
+    - step: route_intramedullary
+      logic:
+        - if_suspected_lipoma_teratoma_dermoid_or_cavernoma: rare_intramedullary_pathology
+        - if_highly_vascular_surface_lesion: hemangioblastoma_vascular_control
+        - else: IMSCT_management
+
+    - step: apply_adjuncts
+      logic:
+        - if_preop_DTI_available_or_resection_risk_high: spinal_DTI_tract_planning
+        - if_stability_concern: spinal_stability_assessment
+
+    - step: intraoperative_events
+      logic:
+        - if_IONM_change_occurs: IONM_rescue_decision
+
+    - step: recurrence_check
+      logic:
+        - if_prior_surgery_at_same_level: recurrent_tumor_reoperation
+
+  uncertainty_handling:
+    - if_compartment_ambiguous: uncertainty_triage
+    - if_critical_inputs_missing: uncertainty_triage
+    - if_imaging_quality_insufficient: uncertainty_triage
+
+# ============================================================================
+# SHARED MODULES
+# ============================================================================
+
+shared_modules:
+
+  - id: spinal_stability_assessment
+    name: Spinal Stability Preservation Module
+    description: >
+      Invoked by any surgical skill when multilevel exposure, cervical location,
+      or pre-existing deformity raises concern for iatrogenic instability.
+    trigger:
+      - cervical laminectomy planned for 3 or more levels
+      - pre-existing kyphosis or loss of lordosis
+      - facet joint compromise anticipated
+      - pediatric or young patient with growth potential
+      - multilevel thoracolumbar exposure in setting of prior surgery
+    assessment:
+      - step: Evaluate pre-existing alignment
+        actions:
+          - measure cervical lordosis on neutral lateral imaging
+          - assess thoracolumbar sagittal balance
+          - note existing deformity or prior instrumentation
+      - step: Estimate destabilization risk from planned surgery
+        factors:
+          - number of levels exposed
+          - laminectomy vs laminoplasty vs laminotomy
+          - facet joint preservation feasibility
+          - patient age and bone quality
+      - step: Decision
+        rules:
+          low_risk:
+            criteria: short-segment laminotomy, facets preserved, normal alignment
+            action: proceed without instrumentation
+          moderate_risk:
+            criteria: multilevel cervical, or borderline alignment
+            action: consider laminoplasty or prophylactic instrumented fusion
+          high_risk:
+            criteria: pre-existing kyphosis, extensive laminectomy, pediatric
+            action: plan concurrent or staged instrumented stabilization
+    never_do_rules:
+      - never perform multilevel cervical laminectomy without documented stability consideration
+      - never ignore pre-existing kyphosis in surgical planning
+
+# ============================================================================
+# CORE TUMOR SKILLS
+# ============================================================================
+
+skills:
+
+  # --------------------------------------------------------------------------
+  # SKILL 1: IMSCT MANAGEMENT
+  # --------------------------------------------------------------------------
+  - id: IMSCT_management
+    name: Intramedullary Spinal Cord Tumor Surgical Management
+    category: core_tumor_resection
+    trigger:
+      - MRI shows intramedullary lesion
+      - lesion centered in spinal cord parenchyma
+      - suspected ependymoma (classic type)
+      - suspected astrocytoma (any grade)
+      - suspected hemangioblastoma (route to dedicated skill after initial triage)
+    exclusions:
+      - suspected lipoma/teratoma/dermoid → rare_intramedullary_pathology
+      - conus/filum location → conus_filum_tumor
+      - known prior surgery at same level → recurrent_tumor_reoperation
+      - highly vascular surface lesion → hemangioblastoma_vascular_control
+
+    required_inputs:
+      - symptom timeline and progression rate
+      - neurological examination (motor grade, sensory level, sphincter status)
+      - contrast-enhanced MRI of involved spine region
+      - lesion level and segment length
+      - enhancement pattern (homogeneous/heterogeneous/ring/none)
+      - presence of syrinx, polar cyst, hemorrhage, calcification
+      - brain MRI if drop metastasis or NF2 is possible
+      - malignancy history
+
+    graceful_degradation:
+      if_brain_MRI_unavailable: proceed but flag for postoperative completion
+      if_detailed_history_incomplete: use available imaging to guide, document gap
+
+    workflow:
+      - step: Confirm intramedullary compartment
+        actions:
+          - verify intraparenchymal location on axial MRI
+          - record central vs dorsal vs eccentric position
+          - record segment length, cord expansion, edema extent
+          - check for multifocal lesions
+
+      - step: Estimate likely pathology
+        patterns:
+          ependymoma_classic:
+            features:
+              - central location within cord
+              - relatively clear tumor-cord margin
+              - homogeneous or regular enhancement
+              - polar cyst or syrinx common
+              - hemosiderin cap may be present
+            resection_implication: clear plane likely, GTR often achievable
+          astrocytoma_pilocytic_WHO_I:
+            features:
+              - well-circumscribed despite being astrocytic
+              - may have cystic component with enhancing nodule
+              - more common in children and young adults
+              - may show relatively clear surgical plane
+            resection_implication: GTR may be achievable if plane found; do not assume infiltrative
+          astrocytoma_diffuse_WHO_II:
+            features:
+              - infiltrative border
+              - longer segment involvement
+              - heterogeneous or patchy enhancement (or no enhancement)
+              - no clear tumor-cord interface
+            resection_implication: plane usually absent, neurological preservation over GTR
+          astrocytoma_high_grade_WHO_III_IV:
+            features:
+              - ring enhancement or necrosis
+              - rapid clinical progression
+              - extensive edema
+            resection_implication: biopsy or limited debulk; adjuvant therapy central to plan
+          hemangioblastoma:
+            features:
+              - superficial or eccentric
+              - vivid homogeneous enhancement
+              - flow voids or visible feeding vessel
+              - consider VHL
+            resection_implication: route to hemangioblastoma_vascular_control skill
+
+      - step: Exclude mimics
+        actions:
+          - consider demyelinating disease (MS, NMOSD, MOG)
+          - consider inflammatory or infectious myelitis
+          - consider vascular malformation (AVM, dAVF) or cavernoma
+          - consider sarcoidosis
+          - consider radiation myelopathy if prior XRT
+        red_flags_for_mimic:
+          - acute onset without mass effect
+          - multifocal non-enhancing lesions
+          - CSF inflammatory profile
+          - no cord expansion on imaging
+        if_mimic_likely:
+          action: redirect to non_tumor_myelopathy workup
+          note: do not proceed to surgical resection planning
+
+      - step: Decide treatment intent
+        rules:
+          progressive_deficit_or_significant_mass_effect:
+            action: surgery preferred
+          mild_symptoms_uncertain_diagnosis:
+            action: short-interval MRI (6-8 weeks), consider advanced workup
+          incidental_asymptomatic_small_lesion:
+            action: serial surveillance with MRI at 3-6 months
+
+      - step: Invoke stability module
+        action: evaluate via spinal_stability_assessment if cervical multilevel or pre-existing deformity
+
+      - step: Plan operation
+        actions:
+          - posterior midline approach as standard
+          - laminotomy preferred for short segment; laminectomy for longer exposure
+          - laminoplasty consideration for cervical multilevel (see stability module)
+          - ultrasound localization if available
+          - setup MEP and SSEP monitoring
+          - add D-wave recording when feasible (especially cervical/thoracic IMSCT)
+
+      - step: Choose entry zone
+        options:
+          posterior_median_sulcus:
+            indication: central or midline tumor
+            technique: identify midline by dorsal root entry zones and dorsal vein
+          dorsal_root_entry_zone:
+            indication: tumor extending toward DREZ
+          over_thinnest_cord:
+            indication: tumor visible at surface or cord maximally thinned
+
+      - step: Resection strategy by pathology expectation
+        rules:
+          if_plane_clear_ependymoma_pattern:
+            goal: maximal safe resection aiming for GTR
+            technique: develop plane circumferentially, work from poles toward center
+          if_pilocytic_astrocytoma_plane_found:
+            goal: GTR attempt warranted if safe plane confirmed
+            technique: careful exploration of interface, proceed if dissectable
+          if_diffuse_astrocytoma_no_plane:
+            goal: neurological preservation over extent of resection
+            technique: internal debulking, stop at cord-tumor interface
+          if_high_grade_astrocytoma:
+            goal: tissue diagnosis, limited cytoreduction if safe
+            technique: biopsy or conservative debulk
+          if_intraoperative_frozen_section_changes_expectation:
+            action: adapt resection goal in real time
+
+      - step: Intraoperative stop rules
+        triggers:
+          - persistent MEP loss not recovering after correction maneuvers
+          - D-wave amplitude decline beyond threshold (see IONM_rescue_decision)
+          - loss of identifiable safe dissection plane
+          - unexpected pathology on frozen section
+        actions:
+          - pause all manipulation
+          - optimize perfusion (raise MAP)
+          - release retractors and irrigate
+          - wait defined observation period
+          - if no recovery and no safe plane → stop resection, document extent
+
+      - step: Postoperative pathway
+        actions:
+          - MRI within 24 to 48 hours to assess resection extent
+          - detailed neurological reassessment at 24h, 72h, discharge
+          - early rehabilitation referral
+          - pathology-based adjuvant discussion (radiation for high-grade, observation for GTR ependymoma)
+          - follow-up MRI schedule per pathology
+          - complete brain MRI if not done preoperatively
+
+    decision_points:
+      - clear_plane_present → more aggressive resection acceptable
+      - infiltrative_pattern → STR or NTR acceptable and appropriate
+      - pilocytic_on_frozen → may warrant more aggressive attempt than diffuse
+      - frozen_section_changes_strategy → adapt goal intraoperatively
+      - monitoring_deterioration → invoke IONM_rescue_decision
+
+    stop_conditions:
+      - inflammatory or vascular lesion more likely than tumor
+      - sustained neuromonitoring deterioration without recovery
+      - unexpected pathology incompatible with resection plan
+
+    never_do_rules:
+      - never present GTR as mandatory for all IMSCT
+      - never assume all astrocytomas are unresectable (pilocytic may have a plane)
+      - never apply MSCC steroid protocol (high-dose dexamethasone) routinely to primary IMSCT
+      - never continue dissection after loss of safe interface
+      - never ignore multilevel cervical stability implications
+
+    working_examples:
+      - case: cervical_ependymoma
+        input:
+          patient: 38F, 6-month progressive hand numbness and gait difficulty
+          MRI: C5-T1 intramedullary centrally located enhancing tumor with polar syrinx
+        application:
+          - mimic exclusion completed (no inflammatory features, progressive mass)
+          - stability module invoked (4-level exposure, laminoplasty considered)
+          - posterior midline approach with D-wave plus MEP/SSEP
+          - clear plane identified at tumor-cord interface
+          - GTR achieved with circumferential dissection
+        output:
+          - early postoperative MRI confirms complete resection
+          - transient dorsal column deficit, improving at 3 months
+
+      - case: cervical_diffuse_astrocytoma
+        input:
+          patient: 28M, progressive quadriparesis over 4 months
+          MRI: C3-C7 infiltrative heterogeneously enhancing intramedullary lesion
+        application:
+          - pattern suggests diffuse astrocytoma
+          - resection goal set as tissue diagnosis plus safe debulking
+          - no clear plane found at surgery
+          - biopsy confirms WHO II diffuse astrocytoma
+          - limited internal debulking performed
+          - D-wave preserved, MEP stable
+        output:
+          - subtotal resection, neurological baseline preserved
+          - adjuvant discussion with neuro-oncology
+
+  # --------------------------------------------------------------------------
+  # SKILL 2: IDEM MANAGEMENT
+  # --------------------------------------------------------------------------
+  - id: IDEM_management
+    name: Intradural Extramedullary Tumor Surgical Management
+    category: core_tumor_resection
+    trigger:
+      - MRI shows intradural extramedullary lesion
+      - dural tail sign
+      - schwannoma or neurofibroma suspected
+      - meningioma suspected
+      - dumbbell tumor morphology
+    exclusions:
+      - conus/filum location with possible myxopapillary ependymoma → conus_filum_tumor
+      - epidural metastatic disease → metastatic_spinal_cord_compression
+
+    required_inputs:
+      - neurological symptoms and duration
+      - contrast-enhanced MRI spine
+      - lesion level and number of segments
+      - relation to cord (dorsal/lateral/ventral)
+      - relation to nerve root
+      - foraminal or paraspinal extension (dumbbell component)
+      - calcification (relevant for ventral meningioma)
+      - NF1/NF2 history if relevant
+
+    workflow:
+      - step: Confirm IDEM compartment
+        actions:
+          - define dorsal, lateral, or ventral position relative to cord
+          - grade cord compression severity
+          - assess foraminal extension and dumbbell component
+          - check for multiple lesions (NF association)
+
+      - step: Estimate tumor type
+        patterns:
+          meningioma:
+            features:
+              - homogeneous enhancement with dural tail
+              - thoracic predominance (especially middle-aged women)
+              - broad dural base
+              - ventral or ventrolateral position common
+              - calcification may be present (increases surgical difficulty)
+          schwannoma:
+            features:
+              - dumbbell morphology possible
+              - foraminal widening on CT or MRI
+              - root-based eccentric lesion
+              - cystic degeneration may be present
+          neurofibroma:
+            features:
+              - fusiform enlargement of nerve root
+              - target sign on T2
+              - consider NF1 if multiple or plexiform
+          other_IDEM:
+            includes: epidermoid, dermoid, arachnoid cyst, paraganglioma, drop metastasis
+            action: consider specific features and manage accordingly
+
+      - step: Decide surgery vs surveillance
+        rules:
+          symptomatic_or_progressive_compression: surgery indicated
+          small_incidental_stable_schwannoma: surveillance with serial MRI acceptable
+          NF_associated_multiple_lesions: operate on symptomatic lesion, survey others
+
+      - step: Plan exposure
+        options:
+          hemilaminectomy:
+            indication: focal dorsolateral lesion with limited extent
+          laminectomy:
+            indication: larger or multilevel lesion, ventral location
+          laminoplasty:
+            indication: cervical multilevel, invoke stability module
+          combined_or_extended_approach:
+            indication: ventral calcified meningioma, large dumbbell schwannoma with paraspinal extension
+        stability_check: invoke spinal_stability_assessment if multilevel or cervical
+
+      - step: Resection strategy by tumor type
+        meningioma:
+          sequence:
+            - open dura, identify tumor and cord relationship
+            - internal decompression (debulk center) to create working space
+            - develop plane between tumor capsule and arachnoid
+            - avoid cord traction — bring tumor to surgeon, not cord to tumor
+            - treat dural attachment last (coagulate, excise, or leave monitored)
+          ventral_calcified_special_considerations:
+            - accept subtotal if complete removal requires dangerous cord manipulation
+            - consider leaving thin calcified capsule adherent to cord
+        schwannoma:
+          sequence:
+            - identify parent nerve root
+            - open tumor capsule, internal debulk
+            - dissect capsule from surrounding roots
+            - sacrifice parent root only if nonfunctional (confirm with stimulation if available)
+            - address extradural dumbbell component (may need extended approach or staging)
+        neurofibroma:
+          sequence:
+            - assess if fascicles traverse the tumor
+            - attempt intracapsular resection preserving functional fascicles
+            - accept subtotal if functional preservation requires it
+
+      - step: Monitoring selection
+        rules:
+          severe_compression_or_ventral_location_or_complex_case: IONM recommended (MEP/SSEP)
+          routine_small_dorsolateral_schwannoma: IONM optional but advisable
+
+      - step: Closure and follow-up
+        actions:
+          - watertight dural closure (or dural graft if needed)
+          - postoperative MRI within 48 hours for complex cases
+          - long-term recurrence surveillance MRI (annually for meningioma, longer intervals for GTR schwannoma)
+          - Simpson grade documentation for meningioma
+
+    stop_conditions:
+      - lesion is epidural metastatic disease on exploration
+      - surgical corridor unsafe for ventral lesion without revised approach
+      - unexpected frozen section result changes management
+
+    never_do_rules:
+      - never sacrifice functional nerve root as default without assessment
+      - never force en bloc removal using dangerous cord retraction
+      - never assume minimally invasive approach is always superior
+      - never ignore calcification in ventral meningioma planning
+
+    working_examples:
+      - case: thoracic_meningioma
+        input:
+          patient: 55F, progressive gait difficulty over 8 months
+          MRI: T6-7 ventrolateral IDEM lesion with dural tail and moderate cord compression
+        application:
+          - meningioma favored by imaging pattern
+          - short-segment laminectomy with IONM
+          - internal decompression first, then circumferential dissection
+          - dural base coagulated, GTR achieved (Simpson II)
+          - no root sacrifice needed
+        output:
+          - postoperative neurological recovery over 3 months
+          - annual MRI surveillance plan
+
+      - case: cervical_dumbbell_schwannoma
+        input:
+          patient: 42M, radiculopathy and early myelopathy
+          MRI: C5-6 dumbbell schwannoma with foraminal and paraspinal extension
+        application:
+          - staged approach planned (intradural first, paraspinal second)
+          - parent root identified as C6, stimulation confirms nonfunctional
+          - intradural component removed, root sacrificed
+          - paraspinal component addressed via posterior extension
+        output:
+          - complete resection
+          - expected C6 radicular deficit, compensated
+
+  # --------------------------------------------------------------------------
+  # SKILL 3: CONUS AND FILUM TUMORS
+  # --------------------------------------------------------------------------
+  - id: conus_filum_tumor
+    name: Conus Medullaris and Filum Terminale Tumor Management
+    category: core_tumor_resection
+    trigger:
+      - tumor centered at conus medullaris or filum terminale
+      - suspected myxopapillary ependymoma
+      - filum-based lesion
+      - intradural mass at L1-L2 or below
+    exclusions:
+      - epidural metastatic disease → metastatic_spinal_cord_compression
+
+    required_inputs:
+      - neurological examination (lower limb motor, saddle sensation, sphincter function)
+      - contrast-enhanced MRI lumbosacral spine
+      - lesion attachment (conus vs filum vs cauda equina roots)
+      - enhancement pattern
+      - CSF dissemination screening (brain and whole-spine MRI)
+
+    workflow:
+      - step: Confirm conus/filum location
+        actions:
+          - distinguish conus-centered from filum-based from cauda equina
+          - assess root involvement and displacement pattern
+          - check for drop metastases (whole spine MRI)
+
+      - step: Estimate pathology
+        patterns:
+          myxopapillary_ependymoma:
+            features:
+              - filum-based or conus tip
+              - homogeneous vivid enhancement
+              - well-encapsulated
+              - may have hemorrhage or mucin signal
+            key_point: GTR strongly preferred due to recurrence risk with STR
+          classic_ependymoma_at_conus:
+            features:
+              - conus-centered, similar to cord ependymoma
+            key_point: treat as IMSCT ependymoma principles but at conus level
+          schwannoma_or_neurofibroma:
+            features:
+              - root-based, displaces filum/roots
+            action: manage per IDEM schwannoma principles
+          paraganglioma:
+            features:
+              - filum-based, intensely enhancing
+              - salt-and-pepper appearance possible
+              - vascular, may bleed significantly
+            key_point: complete resection curative, control bleeding carefully
+          lipoma_or_dermoid:
+            action: route to rare_intramedullary_pathology if intramedullary component
+          drop_metastasis:
+            features:
+              - history of intracranial or spinal primary
+              - multiple enhancing nodules along cauda equina
+            action: biopsy/resect largest symptomatic, systemic therapy discussion
+
+      - step: Surgical planning
+        actions:
+          - laminectomy centered on lesion
+          - midline dural opening
+          - identify filum terminale and conus tip
+          - IONM setup with sphincter EMG (anal/urethral) plus lower limb MEP/SSEP
+
+      - step: Resection strategy
+        myxopapillary_ependymoma:
+          goal: en bloc GTR whenever possible (reduces recurrence)
+          technique:
+            - identify filum above and below tumor
+            - section filum distally
+            - develop plane from distal to proximal
+            - avoid tumor capsule violation (piecemeal increases recurrence risk)
+          if_capsule_breached:
+            action: document, complete resection as much as safely possible, discuss adjuvant
+        paraganglioma:
+          goal: complete resection
+          technique:
+            - anticipate vascularity, have hemostatic agents ready
+            - identify feeding vessel from filum
+
+      - step: Root preservation
+        actions:
+          - stimulate roots before cutting to confirm function
+          - preserve all functional cauda equina roots
+          - filum section below conus is safe
+
+      - step: Postoperative
+        actions:
+          - MRI within 48 hours
+          - detailed sphincter assessment
+          - for myxopapillary ependymoma: long-term surveillance (recurrence can be late)
+          - adjuvant radiation discussion if STR for myxopapillary
+
+    stop_conditions:
+      - unexpected pathology on frozen section incompatible with resection plan
+      - diffuse carcinomatous meningitis found (systemic therapy, not surgical cure)
+
+    never_do_rules:
+      - never piecemeal a myxopapillary ependymoma if en bloc is feasible (higher recurrence with fragmentation)
+      - never sacrifice functional cauda equina roots without stimulation confirmation
+      - never omit sphincter EMG monitoring for conus/filum surgery
+
+    working_examples:
+      - case: filum_myxopapillary_ependymoma
+        input:
+          patient: 32M, low back pain and early bladder hesitancy
+          MRI: L2-L3 filum-based intensely enhancing well-circumscribed mass
+        application:
+          - myxopapillary ependymoma suspected
+          - whole-spine and brain MRI clear
+          - L1-L3 laminectomy
+          - sphincter EMG plus lower limb MEP/SSEP
+          - filum sectioned distally, en bloc removal achieved
+          - capsule intact
+        output:
+          - GTR confirmed on postoperative MRI
+          - sphincter function preserved
+          - long-term annual MRI surveillance
+
+  # --------------------------------------------------------------------------
+  # SKILL 4: METASTATIC SPINAL CORD COMPRESSION
+  # --------------------------------------------------------------------------
+  - id: metastatic_spinal_cord_compression
+    name: Metastatic Spinal Cord Compression Emergency Management
+    category: emergency
+    trigger:
+      - known cancer history with new spinal pain or neurological deficit
+      - MRI showing epidural spinal cord compression
+      - rapidly progressive weakness with suspected metastatic disease
+      - paraplegia or cauda equina syndrome with known malignancy
+
+    required_inputs:
+      - cancer type, stage, treatment history
+      - neurological examination (ambulatory status, sphincter function)
+      - whole-spine MRI with contrast
+      - spinal stability assessment (SINS score)
+      - tumor histology and known radiosensitivity
+      - systemic disease burden and prognosis estimate
+
+    workflow:
+      - step: Recognize emergency
+        actions:
+          - treat as urgent same-day pathway
+          - obtain or confirm whole-spine MRI rapidly
+          - document ambulatory status at presentation (key prognostic factor)
+
+      - step: Immediate medical management
+        actions:
+          - start dexamethasone per local MSCC protocol if compression confirmed
+          - spinal precautions and mobility protection as indicated
+          - VTE prophylaxis consideration
+
+      - step: Stability assessment
+        actions:
+          - calculate SINS score
+          - SINS 0-6: stable, nonoperative management possible
+          - SINS 7-12: potentially unstable, surgical consultation
+          - SINS 13-18: unstable, surgical stabilization likely needed
+
+      - step: Define treatment path
+        rules:
+          surgical_candidates:
+            criteria:
+              - mechanically unstable spine (high SINS)
+              - radioresistant histology (renal, melanoma, sarcoma)
+              - neurological deterioration during or after radiotherapy
+              - single-level compression with reasonable life expectancy
+              - tissue diagnosis needed
+            action: surgical decompression and stabilization plus oncologic adjuvant
+          radiotherapy_candidates:
+            criteria:
+              - radiosensitive histology (lymphoma, myeloma, small cell, breast, prostate)
+              - medically unfit for surgery
+              - multilevel compression without instability
+              - very limited life expectancy
+            action: urgent radiotherapy (conventional or SBRT as appropriate)
+          combined:
+            criteria:
+              - surgery followed by postoperative radiotherapy for most solid tumors
+            action: coordinate timing between neurosurgery and radiation oncology
+
+      - step: Coordinate MDT
+        actions:
+          - neurosurgery or spine surgery
+          - radiation oncology
+          - medical oncology
+          - palliative care if appropriate
+
+      - step: Postoperative or post-treatment follow-up
+        actions:
+          - reassess ambulation and sphincter status serially
+          - wound healing assessment before radiotherapy if surgical
+          - continue systemic oncologic plan
+          - rehabilitation referral
+
+    stop_conditions:
+      - pathology reveals non-malignant lesion (e.g., infection, primary tumor)
+      - patient or family elects comfort care
+
+    never_do_rules:
+      - never delay MRI and specialist referral in suspected MSCC
+      - never apply MSCC high-dose steroid protocol to primary intramedullary tumors
+      - never operate without considering systemic prognosis and goals of care
+      - never omit stability assessment
+
+    working_examples:
+      - case: lung_cancer_T8_MSCC
+        input:
+          patient: 62M, known lung adenocarcinoma, acute paraparesis over 24 hours
+          MRI: T8 epidural compression with cord signal change, SINS 14
+        application:
+          - emergency dexamethasone started
+          - SINS indicates instability
+          - radioresistant histology (lung adenocarcinoma)
+          - urgent surgical decompression and instrumented stabilization
+          - adjuvant radiotherapy planned post-healing
+        output:
+          - ambulation regained post-surgery
+          - transition to medical oncology for systemic therapy
+
+  # --------------------------------------------------------------------------
+  # SKILL 5: HEMANGIOBLASTOMA VASCULAR CONTROL
+  # --------------------------------------------------------------------------
+  - id: hemangioblastoma_vascular_control
+    name: Spinal Hemangioblastoma Vascular-Control Resection Strategy
+    category: special_pathology
+    trigger:
+      - highly vascular intramedullary or dorsal surface lesion
+      - intense homogeneous enhancement with feeding vessels or flow voids
+      - suspected hemangioblastoma
+      - known VHL with new spinal lesion
+
+    required_inputs:
+      - MRI with contrast (including axial cuts for vessel anatomy)
+      - vascular pattern and flow void assessment
+      - lesion position (dorsal surface vs intraparenchymal)
+      - VHL status (MANDATORY — see below)
+      - number of lesions (screen whole spine)
+      - associated cyst or syrinx
+
+    workflow:
+      - step: Mandatory VHL screening
+        actions:
+          - obtain VHL family and genetic history
+          - if not previously tested and patient is young or has multiple lesions: refer for VHL genetic testing
+          - if VHL positive: screen for cerebellar hemangioblastoma, renal lesions, pheochromocytoma, retinal angioma
+          - screen whole spine MRI for additional hemangioblastomas
+        rationale: >
+          VHL-associated hemangioblastomas are multiple and recurrent.
+          Missing VHL changes the entire surveillance and treatment strategy.
+
+      - step: Confirm vascular pattern
+        actions:
+          - review feeding and draining vessel anatomy on MRI
+          - consider spinal angiography if anatomy unclear or lesion is large
+          - distinguish dorsal surface nodule from deep intraparenchymal component
+
+      - step: Decide surgical indication
+        rules:
+          symptomatic_or_growing: surgery indicated
+          small_stable_asymptomatic_in_VHL: surveillance acceptable (operate on progression)
+
+      - step: Plan surgical corridor
+        actions:
+          - approach from side that exposes arterial feeder first when possible
+          - plan exposure to include margin around lesion
+          - ensure IONM setup (MEP/SSEP, D-wave if feasible)
+
+      - step: Operative sequence
+        actions:
+          - expose lesion with surrounding arachnoid dissection
+          - identify and coagulate arterial feeders FIRST
+          - circumferential microsurgical dissection
+          - preserve venous drainage until final stage
+          - en bloc removal after complete devascularization
+          - avoid piecemeal resection (hemorrhage risk)
+
+      - step: Cyst and syrinx management
+        actions:
+          - cyst wall is not tumor (do not resect cyst wall)
+          - removing tumor nodule resolves cyst
+          - marsupialize cyst only if needed for exposure
+
+      - step: Hemostasis and closure
+        actions:
+          - meticulous hemostasis
+          - reassess cord perfusion and monitoring status
+          - watertight closure
+
+      - step: Postoperative and VHL follow-up
+        actions:
+          - MRI within 48 hours
+          - if VHL: lifelong annual or biannual MRI surveillance (brain and spine)
+          - coordinate with VHL multidisciplinary clinic if available
+
+    stop_conditions:
+      - vascular anatomy too complex for safe resection without preoperative embolization
+      - intraoperative hemorrhage uncontrollable (pack, stabilize, consider staged)
+
+    never_do_rules:
+      - never debulk or biopsy into tumor before controlling arterial feeders
+      - never sacrifice major draining vein early without devascularization plan
+      - never omit VHL screening (this is mandatory, not optional)
+      - never resect cyst wall as if it were tumor
+
+    working_examples:
+      - case: cervical_hemangioblastoma_sporadic
+        input:
+          patient: 45F, progressive myelopathy
+          MRI: C3 dorsal surface intensely enhancing nodule with large associated syrinx, flow voids visible
+          VHL: negative family history, genetic testing sent
+        application:
+          - VHL screening initiated
+          - whole-spine MRI shows single lesion
+          - feeder-oriented approach from left posterolateral
+          - arterial feeders coagulated first
+          - en bloc removal after devascularization
+          - cyst wall left intact, syrinx expected to resolve
+        output:
+          - complete resection, D-wave preserved
+          - syrinx resolved on 3-month MRI
+
+  # --------------------------------------------------------------------------
+  # SKILL 6: RARE INTRAMEDULLARY PATHOLOGY
+  # --------------------------------------------------------------------------
+  - id: rare_intramedullary_pathology
+    name: Rare Intramedullary Pathology Management (Lipoma, Teratoma, Dermoid, Cavernoma)
+    category: special_pathology
+    trigger:
+      - suspected intramedullary lipoma (T1 hyperintense, no enhancement)
+      - suspected teratoma (mixed signal, fat/calcification/cystic components)
+      - suspected dermoid (fat-containing, possible restricted diffusion)
+      - suspected cavernoma (popcorn lesion, hemosiderin ring)
+      - intramedullary lesion not fitting typical ependymoma/astrocytoma/hemangioblastoma pattern
+    exclusions:
+      - lipoma clearly associated with dysraphism/tethered cord → dysraphism surgery principles (not covered here)
+
+    required_inputs:
+      - MRI with contrast and fat-suppression sequences
+      - T1 signal characteristics (fat confirmation)
+      - symptom timeline and stability
+      - neurological examination
+      - spinal dysraphism assessment (normal bony anatomy vs dysraphic features)
+
+    workflow:
+      - step: Confirm rare pathology suspicion
+        actions:
+          - T1 bright without enhancement suppressed on fat-sat → lipoma
+          - mixed signal with fat, calcification, cystic → teratoma
+          - popcorn appearance with hemosiderin ring → cavernoma
+          - confirm absence of dysraphic bony features for nondysraphic lipoma
+
+      - step: Determine surgical indication
+        rules:
+          nondysraphic_intramedullary_lipoma:
+            progressive_neurological_deficit: surgery indicated
+            stable_and_mild: conservative observation with serial MRI
+            key_principle: >
+              No clear tumor-cord plane exists. Surgery is for symptomatic
+              decompression by partial debulking, NOT for GTR.
+              GTR is neither expected nor desirable.
+          teratoma:
+            surgical_indication: usually indicated for diagnosis and decompression
+            key_principle: >
+              Mature teratoma components may be resectable.
+              Immature components dictate further management.
+          dermoid:
+            surgical_indication: symptomatic or growing
+            key_principle: avoid capsule rupture (chemical meningitis risk)
+          cavernoma:
+            surgical_indication: symptomatic hemorrhage or progressive deficit
+            stable_incidental: observation acceptable
+            key_principle: >
+              Approach through hemosiderin-stained cord surface.
+              Total removal of cavernoma possible and curative.
+
+      - step: Surgical approach (lipoma-specific)
+        actions:
+          - posterior midline approach
+          - identify lipoma at cord surface (yellow fatty tissue)
+          - debulk centrally using ultrasonic aspirator or sharp dissection
+          - stop debulking when cord tissue is encountered at periphery
+          - do not attempt to find or create a circumferential plane
+          - goal: reduce mass effect, not remove all fat
+        monitoring:
+          - MEP/SSEP mandatory
+          - D-wave if feasible
+          - lower threshold to stop than for ependymoma
+
+      - step: Surgical approach (teratoma-specific)
+        actions:
+          - resect soft components (sebaceous, cystic)
+          - carefully dissect solid components
+          - send tissue for pathology (mature vs immature vs malignant)
+          - accept subtotal if cord interface is inseparable
+
+      - step: Surgical approach (cavernoma-specific)
+        actions:
+          - enter through hemosiderin plane
+          - circumferential dissection of cavernoma nidus
+          - remove en bloc when possible
+          - hemosiderin-stained cord is NOT tumor — do not resect beyond nidus
+
+      - step: Electrocautery considerations (teratoma/dermoid)
+        actions:
+          - minimize electrocautery near cord parenchyma
+          - use bipolar at lowest effective settings
+          - prefer sharp dissection and ultrasonic aspirator
+
+    stop_conditions:
+      - lipoma debulking reaches cord parenchyma at margins
+      - monitoring deterioration during debulking
+      - unexpected pathology (malignant component)
+
+    never_do_rules:
+      - never pursue GTR for nondysraphic intramedullary lipoma
+      - never create a false plane by cutting into cord parenchyma in lipoma surgery
+      - never rupture dermoid capsule carelessly (chemical meningitis)
+      - never resect hemosiderin-stained cord around cavernoma as if it were lesion
+      - never treat observation as failure for stable rare pathologies
+
+    working_examples:
+      - case: cervical_nondysraphic_intramedullary_lipoma
+        input:
+          patient: 29F, progressive myelopathy over 18 months
+          MRI: C4-C6 intramedullary T1-bright lesion, no enhancement, fat-suppressed signal confirms lipoma, no dysraphic features
+        application:
+          - nondysraphic intramedullary lipoma confirmed on imaging
+          - progressive symptoms warrant surgery
+          - posterior approach, laminoplasty for 3-level cervical
+          - central debulking of lipoma with ultrasonic aspirator
+          - stopped when cord tissue encountered peripherally
+          - MEP/SSEP stable throughout
+        output:
+          - subtotal resection (deliberate), adequate decompression
+          - neurological stabilization at 6 months
+          - surveillance MRI annually
+
+      - case: thoracic_intramedullary_cavernoma
+        input:
+          patient: 35M, acute thoracic myelopathy following hemorrhage
+          MRI: T4 intramedullary popcorn lesion with hemosiderin ring and acute hemorrhage
+        application:
+          - cavernoma with acute hemorrhage
+          - surgery indicated for symptomatic hemorrhage
+          - approached through hemosiderin-stained dorsal surface
+          - en bloc removal of cavernoma nidus
+          - hemosiderin rim left undisturbed
+        output:
+          - complete removal of cavernoma
+          - gradual neurological improvement over months
+
+  # --------------------------------------------------------------------------
+  # SKILL 7: SPINAL DTI TRACT PLANNING
+  # --------------------------------------------------------------------------
+  - id: spinal_DTI_tract_planning
+    name: Spinal DTI and Tractography Planning Adjunct
+    category: preoperative_planning
+    trigger:
+      - intramedullary tumor near eloquent long tracts
+      - high-risk cervical cord lesion planned for resection
+      - DTI/tractography data available preoperatively
+      - need to estimate tract displacement vs disruption
+      - clinical-radiological discordance requiring additional tract assessment
+
+    required_inputs:
+      - standard contrast-enhanced MRI
+      - DTI/tractography dataset
+      - acquisition parameters (b-values, directions, resolution)
+      - neurological baseline
+      - planned surgical approach and myelotomy corridor
+
+    graceful_degradation:
+      if_DTI_unavailable:
+        action: >
+          Proceed with standard MRI-based planning. DTI is adjunctive, not mandatory.
+          Use conventional MRI signal characteristics, neurological examination, and
+          intraoperative findings to guide resection.
+      if_DTI_quality_poor:
+        action: >
+          Do not rely on tractography for corridor planning. Note artifact sources
+          (susceptibility, motion, low direction count). Treat as if DTI unavailable.
+      if_DTI_and_clinical_discordant:
+        action: >
+          Prioritize clinical examination and conventional MRI. DTI findings that
+          conflict with established anatomy or clear clinical picture should not
+          override direct evidence.
+
+    workflow:
+      - step: Validate DTI data quality
+        actions:
+          - review acquisition parameters (minimum 20 directions recommended, b=1000-2000)
+          - check for motion artifact, susceptibility distortion
+          - assess signal-to-noise at tumor level
+          - if quality insufficient: declare DTI non-contributory, proceed without
+        quality_flags:
+          acceptable: adequate SNR, minimal artifact, anatomically plausible tracts
+          marginal: some artifact but key tracts visible, interpret with caution
+          poor: severe artifact or implausible tract reconstructions, discard
+
+      - step: Correlate with conventional MRI
+        actions:
+          - overlay tractography on anatomical sequences
+          - verify tract positions are anatomically plausible
+          - identify tumor margins on conventional imaging as reference
+
+      - step: Review tract pattern
+        patterns:
+          displacement:
+            description: tracts deviated but continuous around tumor
+            implication: suggests maintained tract integrity, may support corridor planning
+          thinning:
+            description: tracts attenuated but traceable
+            implication: tracts at risk, handle with extra care in this zone
+          interruption:
+            description: tracts discontinuous at tumor level
+            implication: may indicate severe tract injury or infiltration, but can also be artifact
+            caveat: interruption on DTI alone is NOT diagnostic of irreversible damage
+          disorganization:
+            description: chaotic tract pattern within tumor
+            implication: suggests infiltrative pathology, low likelihood of safe plane
+
+      - step: Apply to surgical planning
+        actions:
+          - use displacement pattern to refine myelotomy side and trajectory
+          - identify tract-free corridor if visible
+          - plan entry point to minimize crossing of intact displaced tracts
+          - discuss tract risk zones with surgical team
+
+      - step: Integrate with IONM plan
+        actions:
+          - use DTI tract prediction to set monitoring priorities
+          - if DTI suggests lateral tract displacement, emphasize MEP for ipsilateral limbs
+          - DTI hypothesis should inform but not replace standard full monitoring protocol
+
+      - step: Use for patient counseling
+        actions:
+          - displacement pattern may support better prognosis discussion
+          - interruption pattern warrants cautious functional outcome discussion
+          - always qualify DTI findings as adjunctive estimates
+
+    research_applications:
+      - FA ratio (tumor-level vs reference-level) as prognostic biomarker
+      - tract pattern classification and correlation with surgical outcome
+      - longitudinal DTI for monitoring residual/recurrent tumor
+
+    stop_conditions:
+      - DTI quality too poor to be informative
+      - tractography findings grossly conflict with standard anatomy
+
+    never_do_rules:
+      - never use DTI alone to declare a tumor resectable or unresectable
+      - never let tractography override direct anatomical MRI or IONM findings
+      - never treat DTI interruption as definitive proof of permanent tract damage
+      - never omit standard MRI interpretation in favor of DTI alone
+      - never present DTI-based surgical planning as equivalent to navigation-grade precision
+
+    working_examples:
+      - case: cervical_IMSCT_with_DTI_displacement
+        input:
+          patient: eccentric cervical intramedullary tumor with preserved motor function
+          MRI: C4-C6 lesion, eccentric to left
+          DTI: corticospinal tracts displaced laterally and posteriorly, continuous, FA reduced but tracts traceable
+        application:
+          - DTI quality validated (adequate directions, plausible anatomy)
+          - displacement pattern supports posterior median sulcus approach
+          - myelotomy planned to avoid laterally displaced tract bundle
+          - MEP monitoring emphasis on bilateral lower extremities
+        output:
+          - surgical corridor refined based on DTI
+          - tract preservation confirmed by stable intraoperative monitoring
+
+      - case: cervical_IMSCT_DTI_unavailable
+        input:
+          patient: C3-C5 central intramedullary tumor
+          DTI: not acquired
+        application:
+          - proceed with standard MRI-based planning
+          - posterior midline approach as default
+          - full MEP/SSEP/D-wave monitoring
+          - intraoperative anatomy and monitoring guide resection extent
+        output:
+          - DTI absence does not change fundamental surgical approach
+          - safe resection achieved with standard methodology
+
+  # --------------------------------------------------------------------------
+  # SKILL 8: IONM RESCUE AND STOP-CONTINUE LOGIC
+  # --------------------------------------------------------------------------
+  - id: IONM_rescue_decision
+    name: Intraoperative Neuromonitoring Rescue and Stop-Continue Logic
+    category: intraoperative_safety
+    trigger:
+      - MEP amplitude drop or loss
+      - SSEP latency increase or amplitude drop
+      - D-wave amplitude decline
+      - any significant monitoring change during spinal tumor surgery
+
+    required_inputs:
+      - baseline IONM data for all modalities in use
+      - timing and nature of signal change
+      - current surgical maneuver at time of change
+      - blood pressure, temperature, oxygenation status
+      - anesthetic regimen and any recent changes
+      - lesion compartment and surgery type
+      - D-wave availability
+
+    graceful_degradation:
+      if_D-wave_not_available:
+        action: >
+          Rely on MEP and SSEP interpretation. Without D-wave, MEP loss carries
+          higher uncertainty — lower threshold to stop resection with sustained
+          MEP loss. Cannot distinguish transient from permanent motor pathway
+          injury as reliably.
+      if_MEP_unobtainable_at_baseline:
+        action: >
+          If due to pre-existing severe deficit, rely on D-wave (if available) and SSEP.
+          If technical failure, troubleshoot. Document limitation.
+      if_all_monitoring_lost_technically:
+        action: >
+          Maximum caution. Consider pausing surgery to troubleshoot.
+          If monitoring cannot be restored, surgeon must rely on anatomical
+          judgment alone. Lower threshold to limit resection extent.
+
+    workflow:
+      - step: Recognize and classify signal change
+        actions:
+          - note which modality changed (MEP, SSEP, D-wave, EMG)
+          - note severity (decrease vs complete loss)
+          - note timing relative to surgical action
+          - note laterality if applicable
+
+      - step: Rule out technical and systemic causes FIRST
+        checks:
+          technical:
+            - electrode displacement or disconnection
+            - stimulator malfunction
+            - electrical interference
+          anesthetic:
+            - bolus of neuromuscular blockade
+            - volatile anesthetic increase
+            - propofol dose change
+          systemic:
+            - hypotension (MAP drop)
+            - hypothermia
+            - hypoxia
+            - anemia
+        if_systemic_or_technical_cause_found:
+          action: correct immediately, reassess signal before attributing to surgery
+
+      - step: Reverse recent surgical maneuver
+        actions:
+          - immediately release any retraction or traction
+          - stop dissection and coagulation
+          - irrigate surgical field with warm saline
+          - remove cottonoids applying pressure
+          - pause and observe for recovery
+
+      - step: Optimize physiology
+        actions:
+          - raise MAP (target 80-90 mmHg or 20% above baseline, per case)
+          - verify adequate oxygenation and ventilation
+          - correct temperature if hypothermic
+          - communicate with anesthesia team
+
+      - step: Interpret by modality combination
+        rules:
+          MEP_drop_with_D-wave_preserved:
+            interpretation: >
+              Transient corticospinal tract stress likely. D-wave preservation
+              indicates long-tract continuity maintained. High probability of
+              motor recovery (may take days to weeks).
+            action: cautious continuation possible if MEP partially recovers
+          MEP_drop_with_D-wave_declining:
+            interpretation: >
+              More concerning for structural corticospinal injury.
+              Persistent D-wave decline below 50% of baseline is high-risk
+              threshold for permanent motor deficit.
+            action: strong consideration to stop resection
+          D-wave_loss_or_below_50_percent:
+            interpretation: >
+              Highest risk signal. Strong predictor of at least transient
+              severe motor deficit. Persistent loss predicts long-term deficit.
+            action: stop resection unless extraordinary circumstance
+          SSEP_change_only:
+            interpretation: >
+              Dorsal column pathway involvement. Reassess positioning, traction
+              on dorsal cord, and perfusion. Less immediately predictive of
+              motor outcome but indicates cord stress.
+            action: correct cause, monitor closely, less urgent than MEP/D-wave loss
+          EMG_activity_during_IDEM_or_root_work:
+            interpretation: nerve root irritation
+            action: pause manipulation of affected root, allow recovery
+          combined_MEP_and_SSEP_loss:
+            interpretation: >
+              Global cord compromise — consider vascular injury (anterior spinal
+              artery or posterior spinal arteries).
+            action: stop surgery, optimize perfusion urgently, assess for vascular event
+
+      - step: Decide continue vs stop
+        decision_matrix:
+          signal_recovers_after_correction:
+            action: cautious continuation with heightened vigilance
+            note: reduce aggressiveness of dissection
+          partial_recovery_D-wave_stable:
+            action: limited cautious continuation possible
+            note: accept lesser resection extent
+          persistent_major_decline_or_D-wave_threatened:
+            action: stop resection
+            note: residual tumor preferable to permanent deficit
+          no_monitoring_available:
+            action: maximum anatomical caution, accept conservative resection
+
+      - step: Document monitoring event
+        required_documentation:
+          - modality affected
+          - severity and timing
+          - surgical maneuver at time of change
+          - corrective actions taken
+          - recovery status (none/partial/complete)
+          - time from event to recovery or decision to stop
+          - final resection extent relative to monitoring event
+
+    stop_conditions:
+      - D-wave persistent decline below 50% of baseline
+      - complete unrecovered MEP loss after adequate correction time
+      - combined MEP plus SSEP loss suggesting vascular event
+      - surgeon judgment that further resection crosses safety threshold
+
+    never_do_rules:
+      - never ignore D-wave deterioration in IMSCT
+      - never continue aggressive resection through sustained monitoring failure
+      - never attribute all changes to anesthesia without completing technical check
+      - never resume aggressive resection after a major monitoring event without team discussion
+      - never treat monitoring as infallible (false positives and negatives exist)
+
+    working_examples:
+      - case: IMSCT_MEP_drop_D-wave_preserved
+        input:
+          event: bilateral MEP amplitude drops to 20% during deep interface dissection of ependymoma
+          D-wave: remains at 85% of baseline
+        application:
+          - pause and release traction
+          - raise MAP from 70 to 85 mmHg
+          - verify no anesthetic change
+          - D-wave stable at 85%
+          - MEP partially recovers to 60% over 10 minutes
+          - cautious limited resection continues with modified technique
+        output:
+          - near-total resection achieved
+          - transient postoperative weakness, recovering by 2 weeks
+
+      - case: IMSCT_D-wave_declining
+        input:
+          event: D-wave declining to 55% during astrocytoma debulking, MEP lost bilaterally
+        application:
+          - all resection stopped immediately
+          - MAP raised, traction released, irrigation applied
+          - D-wave stabilizes at 52% after 15 minutes
+          - does not recover further
+          - resection terminated, subtotal resection documented
+        output:
+          - transient severe weakness postoperatively
+          - gradual recovery over months (D-wave preserved above 50%)
+          - residual tumor managed with surveillance
+
+  # --------------------------------------------------------------------------
+  # SKILL 9: RECURRENT TUMOR REOPERATION
+  # --------------------------------------------------------------------------
+  - id: recurrent_tumor_reoperation
+    name: Recurrent Spinal Tumor Reoperation Management
+    category: reoperation
+    trigger:
+      - tumor recurrence or regrowth at previously operated level
+      - progressive symptoms after prior spinal tumor surgery
+      - surveillance MRI shows enlarging residual or new enhancement at surgical site
+    exclusions:
+      - first-time surgery → use appropriate primary skill
+      - new tumor at different level → use appropriate primary skill
+
+    required_inputs:
+      - prior operative reports and pathology
+      - prior monitoring data and baseline
+      - current neurological status compared to pre/post first surgery
+      - current MRI compared to earliest postoperative MRI
+      - interval since prior surgery
+      - prior adjuvant treatment history
+      - current stability status of operated segment
+
+    workflow:
+      - step: Characterize recurrence
+        actions:
+          - compare current MRI to immediate postoperative and serial follow-up MRIs
+          - distinguish true recurrence from residual progression
+          - assess recurrence location relative to prior surgical corridor
+          - evaluate for malignant transformation (change in enhancement or growth pattern)
+
+      - step: Reassess surgical indication
+        rules:
+          progressive_deficit_with_clear_recurrence: reoperation considered
+          slow_growing_asymptomatic_residual: continued surveillance may be appropriate
+          malignant_transformation_suspected: biopsy before committing to resection strategy
+          radiation_available_and_not_yet_used: consider as alternative to reoperation
+        decision_factors:
+          - patient's current neurological reserve
+          - probability of meaningful resection in scar tissue
+          - availability of adjuvant options not yet tried
+          - patient preferences and goals
+
+      - step: Anticipate reoperation challenges
+        expected_difficulties:
+          - scar tissue and adhesions obscuring normal planes
+          - altered anatomy from prior laminectomy/laminoplasty
+          - prior monitoring baselines no longer applicable
+          - potentially increased cord vulnerability
+          - CSF leak risk higher with redo durotomy
+
+      - step: Modified surgical planning
+        actions:
+          - review prior op note in detail for approach, extent, complications
+          - plan approach that uses prior corridor if adequate, or modify if needed
+          - stability reassessment (prior laminectomy + new exposure = more instability risk)
+          - invoke spinal_stability_assessment module
+          - consider intraoperative ultrasound for localization through scar
+
+      - step: Adjusted monitoring strategy
+        actions:
+          - obtain new baselines (may be worse than original baseline)
+          - if patient has new fixed deficits, some modalities may be unobtainable
+          - lower threshold to stop resection compared to primary surgery
+          - D-wave even more critical in reoperation setting
+
+      - step: Modified resection goals
+        principles:
+          - reoperation resection goals are generally more conservative than primary
+          - scar-tumor interface is often more treacherous than native tumor-cord interface
+          - accept lesser resection extent more readily
+          - prioritize neurological preservation even more strongly
+
+      - step: Postoperative planning
+        actions:
+          - early MRI to document new extent
+          - adjuvant therapy discussion if not previously used
+          - closer surveillance interval than after primary surgery
+          - rehabilitation reassessment
+
+    stop_conditions:
+      - scar tissue indistinguishable from tumor intraoperatively
+      - monitoring deterioration at lower thresholds than primary surgery
+      - intraoperative finding changes diagnosis (infection, radiation necrosis)
+
+    never_do_rules:
+      - never apply primary surgery resection goals to reoperation without adjustment
+      - never ignore the higher risk profile of redo surgery in consent and planning
+      - never omit review of prior operative report before reoperation
+      - never forget that prior baselines are invalid for monitoring comparison
+
+    working_examples:
+      - case: recurrent_ependymoma_after_STR
+        input:
+          patient: 42M, prior C5-C7 ependymoma STR 3 years ago, now progressive myelopathy
+          MRI: enhancing recurrence at C6 level, larger than immediate postop residual
+          prior_surgery: STR with preserved D-wave, mild residual hand weakness
+        application:
+          - true recurrence confirmed by growth on serial imaging
+          - progressive deficit warrants reoperation consideration
+          - adjuvant radiation discussed as alternative (not previously given)
+          - patient and team elect reoperation attempt
+          - stability module invoked (prior C5-C7 laminectomy, now extended)
+          - laminoplasty revision with instrumented support
+          - new monitoring baselines obtained (MEP reduced on right hand)
+          - more conservative resection goal set
+          - debulking achieved, plane lost in scar
+          - stopped at scar-tumor interface
+        output:
+          - subtotal resection, neurological baseline preserved
+          - adjuvant radiotherapy recommended for residual
+
+  # --------------------------------------------------------------------------
+  # SKILL 10: UNCERTAINTY TRIAGE
+  # --------------------------------------------------------------------------
+  - id: uncertainty_triage
+    name: Uncertainty Triage and Incomplete Information Handling
+    category: safety_and_routing
+    trigger:
+      - compartment classification ambiguous
+      - critical required inputs missing for any skill
+      - imaging quality insufficient for diagnosis
+      - clinical-radiological discordance
+      - case does not fit any clear pattern
+
+    purpose: >
+      Prevent premature commitment to a surgical pathway when diagnostic
+      uncertainty is significant. Route toward additional workup or
+      conservative management until clarity improves.
+
+    workflow:
+      - step: Identify what is uncertain
+        categories:
+          diagnostic_uncertainty:
+            examples:
+              - cannot distinguish tumor from inflammatory myelopathy
+              - intramedullary vs exophytic IDEM unclear
+              - cannot determine tumor type from imaging
+            action: additional workup before surgical commitment
+          incomplete_data:
+            examples:
+              - MRI without contrast
+              - no neurological examination documented
+              - no history available
+            action: obtain missing data before proceeding
+          imaging_quality:
+            examples:
+              - motion artifact obscuring lesion margins
+              - inadequate sequences (missing fat-sat, missing contrast)
+            action: repeat or supplement imaging
+          clinical_radiological_discordance:
+            examples:
+              - severe imaging findings with minimal symptoms
+              - significant symptoms with subtle imaging findings
+            action: reassess both, consider alternative diagnoses
+
+      - step: Apply safe defaults
+        rules:
+          if_tumor_vs_inflammation_unclear:
+            action: >
+              Short-interval MRI (4-6 weeks), consider CSF analysis,
+              consider trial of anti-inflammatory treatment if inflammation
+              more likely, do NOT rush to surgery.
+          if_compartment_ambiguous:
+            action: >
+              Obtain additional sequences (thin-cut axial, contrast timing),
+              consider advanced MRI. Route to most likely compartment skill
+              with explicit uncertainty flag.
+          if_pathology_type_unpredictable:
+            action: >
+              Plan for surgical exploration with multiple contingency plans.
+              Prepare for frozen section-guided intraoperative decision-making.
+              Set up comprehensive monitoring (full MEP/SSEP/D-wave).
+
+      - step: Document uncertainty
+        actions:
+          - explicitly state what is uncertain and why
+          - list differential diagnosis with estimated probability
+          - document what additional information would resolve uncertainty
+          - record decision rationale if proceeding despite uncertainty
+
+      - step: Communication
+        actions:
+          - inform patient and team of diagnostic uncertainty
+          - adjust consent discussion to reflect range of possible findings
+          - establish intraoperative contingency plans
+
+    never_do_rules:
+      - never commit to aggressive resection plan when diagnosis is uncertain
+      - never skip workup that could resolve diagnostic ambiguity before surgery
+      - never present uncertain diagnosis as certain in surgical planning
+      - never ignore clinical-radiological discordance
+
+    working_examples:
+      - case: ambiguous_cervical_lesion
+        input:
+          patient: 30F, subacute myelopathy over 2 weeks
+          MRI: C3-C5 intramedullary T2 hyperintensity, faint patchy enhancement, mild expansion
+          issue: cannot distinguish tumor from demyelinating disease
+        application:
+          - uncertainty identified: tumor vs demyelination
+          - CSF analysis ordered (oligoclonal bands, cytology, protein)
+          - aquaporin-4 and MOG antibodies sent
+          - short-interval MRI in 4 weeks
+          - brain MRI obtained
+          - NOT committed to surgical plan yet
+        output:
+          - CSF shows oligoclonal bands, MOG positive
+          - diagnosis revised to MOG-associated myelitis
+          - surgery avoided, treated with immunotherapy
+          - demonstrates value of uncertainty triage
+
+# ============================================================================
+# SYSTEM METADATA
+# ============================================================================
+
+system_notes:
+  design_principles:
+    - patient safety over resection extent in all decisions
+    - monitoring data informs but does not replace surgical judgment
+    - DTI and advanced adjuncts are supplements, not replacements for fundamentals
+    - uncertainty should be acknowledged, not hidden
+    - each skill can invoke shared modules and cross-reference other skills
+    - reoperation has a distinct risk profile from primary surgery
+
+  intended_use:
+    - LLM-based clinical decision support (OpenClaw / SOUL.md integration)
+    - structured surgical checklist for team standardization
+    - trainee education and case discussion framework
+    - foundation for publishable clinical decision algorithms
+
+  limitations:
+    - does not replace surgeon judgment or patient-specific assessment
+    - imaging interpretation requires qualified human review
+    - monitoring thresholds are guidelines, not absolute rules
+    - rare pathology workflows are based on limited evidence and expert opinion
+    - system assumes access to standard neurosurgical equipment and monitoring
+
+  version_history:
+    v1: initial concept
+    v2: structured YAML with core skills
+    v3: six skills covering major scenarios
+    v4: >
+      expanded to ten skills; added rare pathology, conus/filum tumors,
+      reoperation, uncertainty triage; added stability shared module;
+      refined astrocytoma subtyping; mandatory VHL screening;
+      graceful degradation for DTI and IONM; expanded working examples
