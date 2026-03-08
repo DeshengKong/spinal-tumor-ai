@@ -1,9 +1,22 @@
 # spinal-tumor-ai
 AI surgical decision framework for spinal tumors (IMSCT, IDEM, MSCC) with skill-based reasoning, intraoperative monitoring logic, and DTI-assisted planning.
+
+## Overview
+
+This repository implements a **skill-based AI surgical reasoning framework**
+for intraspinal tumors.
+
+The system models neurosurgical decision-making as modular skills that
+handle:
+
+• tumor classification  
+• surgical strategy  
+• intraoperative safety  
+• uncertainty management
+
 ## Architecture
 
 Router
-
 ├── Core Tumor Workflows
 │   ├── IMSCT_management
 │   ├── IDEM_management
